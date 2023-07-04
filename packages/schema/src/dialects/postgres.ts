@@ -14,7 +14,7 @@ enum TableType {
 }
 
 type RawColumn = {
-	kind?: TableType;  //not know what to do thinkz...
+	kind?: TableType;
 	name: string;
 	table: string;
 	schema: string;
@@ -88,7 +88,7 @@ export default class Postgres implements SchemaInspector {
 	}
 
 	// Overview
-  // not in v9.24.0 in all
+	// in v9.24.0, the segments in postgres.ts, others code almost in knex-schema-inspector's /lib/dialects/postgres.ts
 	// ===============================================================================================
 
 	async overview(): Promise<SchemaOverview> {
@@ -129,7 +129,7 @@ export default class Postgres implements SchemaInspector {
         LEFT JOIN information_schema.tables t
           ON c.table_name = t.table_name
         WHERE
-          t.table_type = 'BASE TABLE'
+          t.table_type in ('BASE TABLE', 'VIEW')
           AND c.table_schema IN (${bindings});
       `,
 				this.explodedSchema,
@@ -137,7 +137,9 @@ export default class Postgres implements SchemaInspector {
 
 			this.knex.raw(
 				`
-        SELECT relname as table_name
+      WITH tables AS (
+        SELECT 'table' as type
+          , relname as table_name
           , pg_attribute.attname as column_name
         FROM pg_index
           , pg_class
@@ -152,6 +154,23 @@ export default class Postgres implements SchemaInspector {
           AND indisprimary
           AND indnatts = 1
 			 AND relkind != 'S'
+      ),
+      views AS (
+        WITH summary AS (
+          SELECT 'view' AS type
+            , c.table_name
+            , column_name
+            , ordinal_position AS rank
+          FROM information_schema.columns c
+          LEFT JOIN information_schema.tables t
+            ON c.table_name = t.table_name
+          WHERE t.table_type = 'VIEW'
+        )
+        SELECT type, table_name, column_name
+        FROM summary
+        WHERE rank = 1
+      )
+      SELECT * FROM tables
       `,
 				this.explodedSchema,
 			),
@@ -180,7 +199,7 @@ export default class Postgres implements SchemaInspector {
 				FROM geometries g
 				JOIN information_schema.tables t
 					ON g.f_table_name = t.table_name
-					AND t.table_type = 'BASE TABLE'
+					AND t.table_type in ('BASE TABLE', 'VIEW')
 				WHERE f_table_schema in (${bindings})
 				`,
 				this.explodedSchema,
@@ -199,7 +218,7 @@ export default class Postgres implements SchemaInspector {
 			}
 
 			if (column.table_name in overview === false) {
-				overview[column.table_name] = { columns: {}, primary: <any>undefined };
+				overview[column.table_name] = { columns: {}, primary: 'id' };
 			}
 
 			if (['point', 'polygon'].includes(column.data_type)) {
@@ -381,7 +400,7 @@ export default class Postgres implements SchemaInspector {
 			knex.raw<{ rows: RawColumn[] }>(
 				`
 			SELECT
-				relkind AS kind, //not know what to do thinkz...
+				relkind AS kind, 
 				att.attname AS name,
 			  rel.relname AS table,
 			  rel.relnamespace::regnamespace::text as schema,
@@ -434,10 +453,10 @@ export default class Postgres implements SchemaInspector {
 			knex.raw<{ rows: Constraint[] }>(
 				`
 			SELECT
-        // rel.relkind AS kind, //not know what to do thinkz...
-        COALESCE(con.contype, 'p') AS type,
+			  rel.relkind AS kind,
+			  COALESCE(con.contype, 'p') AS type,
 			  rel.relname AS table,
-        COALESCE(att.attname, 'id') AS column,
+			  COALESCE(att.attname, 'id') AS column,
 			  frel.relnamespace::regnamespace::text AS foreign_key_schema,
 			  frel.relname AS foreign_key_table,
 			  fatt.attname AS foreign_key_column,
