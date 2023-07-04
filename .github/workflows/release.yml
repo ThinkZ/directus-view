@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]*'
+      - 'zv*'
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
