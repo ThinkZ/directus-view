@@ -5,7 +5,16 @@ import type { Table } from '../types/table.js';
 import type { Column } from '../types/column.js';
 import { stripQuotes } from '../utils/strip-quotes.js';
 
+enum TableType {
+  OrdinaryTable = 'r',
+  BaseTable = 't',
+  View = 'v',
+  // MaterializedView = 'm',
+  // ForeignTable = 'f',
+}
+
 type RawColumn = {
+  // kind?: TableType;  //not know what to do thinkz...
 	name: string;
 	table: string;
 	schema: string;
@@ -79,6 +88,7 @@ export default class Postgres implements SchemaInspector {
 	}
 
 	// Overview
+  // not in v9.24.0 in all
 	// ===============================================================================================
 
 	async overview(): Promise<SchemaOverview> {
@@ -235,6 +245,13 @@ export default class Postgres implements SchemaInspector {
 		return result.rows.map((row: { name: string }) => row.name);
 	}
 
+  /**
+   * SQL-ready list of table types
+   */
+  tableTypes = Object.values(TableType)
+    .map((e) => `'${e}'`)
+    .join(', ');
+
 	/**
 	 * Get the table info for a given table. If table parameter is undefined, it will return all tables
 	 * in the current schema/database
@@ -259,7 +276,7 @@ export default class Postgres implements SchemaInspector {
 		 WHERE
 			rel.relnamespace IN (${schemaIn})
 			${table ? 'AND rel.relname = ?' : ''}
-			AND rel.relkind = 'r'
+			AND rel.relkind IN (${this.tableTypes})
 		 ORDER BY rel.relname
 	  `,
 			bindings
@@ -283,7 +300,7 @@ export default class Postgres implements SchemaInspector {
 			pg_class rel
 		 WHERE
 			rel.relnamespace IN (${schemaIn})
-			AND rel.relkind = 'r'
+			AND rel.relkind IN (${this.tableTypes})
 			AND rel.relname = ?
 		 ORDER BY rel.relname
 	  `,
@@ -316,7 +333,7 @@ export default class Postgres implements SchemaInspector {
 		 WHERE
 			rel.relnamespace IN (${schemaIn})
 			${table ? 'AND rel.relname = ?' : ''}
-			AND rel.relkind = 'r'
+			AND rel.relkind IN (${this.tableTypes})
 			AND att.attnum > 0
 			AND NOT att.attisdropped;
 	  `,
@@ -363,6 +380,7 @@ export default class Postgres implements SchemaInspector {
 			knex.raw<{ rows: RawColumn[] }>(
 				`
 			SELECT
+          //relkind AS kind, //not know what to do thinkz...
 				att.attname AS name,
 			  rel.relname AS table,
 			  rel.relnamespace::regnamespace::text as schema,
@@ -405,7 +423,7 @@ export default class Postgres implements SchemaInspector {
 			  rel.relnamespace IN (${schemaIn})
 			  ${table ? 'AND rel.relname = ?' : ''}
 			  ${column ? 'AND att.attname = ?' : ''}
-			  AND rel.relkind = 'r'
+			  AND rel.relkind IN (${this.tableTypes})
 			  AND att.attnum > 0
 			  AND NOT att.attisdropped
 			ORDER BY rel.relname, att.attnum;
@@ -415,9 +433,10 @@ export default class Postgres implements SchemaInspector {
 			knex.raw<{ rows: Constraint[] }>(
 				`
 			SELECT
-			  con.contype AS type,
+        // rel.relkind AS kind, //not know what to do thinkz...
+        COALESCE(con.contype, 'p') AS type,
 			  rel.relname AS table,
-			  att.attname AS column,
+        COALESCE(att.attname, 'id') AS column,
 			  frel.relnamespace::regnamespace::text AS foreign_key_schema,
 			  frel.relname AS foreign_key_table,
 			  fatt.attname AS foreign_key_column,
@@ -427,12 +446,12 @@ export default class Postgres implements SchemaInspector {
 			  END AS has_auto_increment
 			FROM
 			  pg_constraint con
-			LEFT JOIN pg_class rel ON con.conrelid = rel.oid
+			FULL JOIN pg_class rel ON con.conrelid = rel.oid
 			LEFT JOIN pg_class frel ON con.confrelid = frel.oid
-			LEFT JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
-			LEFT JOIN pg_attribute fatt ON fatt.attrelid = con.confrelid AND fatt.attnum = con.confkey[1]
+			FULL JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
+			FULL JOIN pg_attribute fatt ON fatt.attrelid = con.confrelid AND fatt.attnum = con.confkey[1]
 			WHERE con.connamespace IN (${schemaIn})
-			  AND array_length(con.conkey, 1) <= 1
+			  -- AND array_length(con.conkey, 1) <= 1
 			  AND (con.confkey IS NULL OR array_length(con.confkey, 1) = 1)
 			  ${table ? 'AND rel.relname = ?' : ''}
 			  ${column ? 'AND att.attname = ?' : ''}
@@ -448,10 +467,20 @@ export default class Postgres implements SchemaInspector {
 
 			const foreignKeyConstraint = constraintsForColumn.find((constraint) => constraint.type === 'f');
 
+      /*
+      globalThis.console.debug(
+        `- ${col.kind} ${col.table}: column ${col.name} (${
+          col.data_type
+        }) with constraints: ${constraintsForColumn
+          .map((c) => c.type)
+          .join(', ')}`
+      );
+      */
+
 			return {
 				...col,
-				is_unique: constraintsForColumn.some((constraint) => ['u', 'p'].includes(constraint.type)),
-				is_primary_key: constraintsForColumn.some((constraint) => constraint.type === 'p'),
+        is_unique: constraintsForColumn.some((constraint) => ['u', 'p'].includes(constraint.type)) || col.name === 'id',
+        is_primary_key: constraintsForColumn.some((constraint) => constraint.type === 'p') || col.name === 'id',
 				has_auto_increment: constraintsForColumn.some((constraint) => constraint.has_auto_increment),
 				default_value: parseDefaultValue(col.default_value),
 				foreign_key_schema: foreignKeyConstraint?.foreign_key_schema ?? null,
@@ -539,7 +568,7 @@ export default class Postgres implements SchemaInspector {
 			rel.relnamespace IN (${schemaIn})
 			AND rel.relname = ?
 			AND att.attname = ?
-			AND rel.relkind = 'r'
+			AND rel.relkind IN (${this.tableTypes})
 			AND att.attnum > 0
 			AND NOT att.attisdropped;
 	  `,
@@ -571,7 +600,7 @@ export default class Postgres implements SchemaInspector {
 			[table]
 		);
 
-		return result.rows?.[0]?.column ?? null;
+		return result.rows?.[0]?.column ?? 'id';
 	}
 
 	// Foreign Keys
