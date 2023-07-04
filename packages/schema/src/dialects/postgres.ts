@@ -14,7 +14,7 @@ enum TableType {
 }
 
 type RawColumn = {
-  // kind?: TableType;  //not know what to do thinkz...
+	kind?: TableType;  //not know what to do thinkz...
 	name: string;
 	table: string;
 	schema: string;
@@ -210,6 +210,7 @@ export default class Postgres implements SchemaInspector {
 		}
 
 		for (const { table_name, column_name } of primaryKeys) {
+			// overview[table_name] ??= { columns: {}, primary: <any>undefined }; // may not used.
 			overview[table_name]!.primary = column_name;
 		}
 
@@ -380,7 +381,7 @@ export default class Postgres implements SchemaInspector {
 			knex.raw<{ rows: RawColumn[] }>(
 				`
 			SELECT
-          //relkind AS kind, //not know what to do thinkz...
+				relkind AS kind, //not know what to do thinkz...
 				att.attname AS name,
 			  rel.relname AS table,
 			  rel.relnamespace::regnamespace::text as schema,
